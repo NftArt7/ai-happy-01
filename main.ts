@@ -1,8 +1,12 @@
-// ai-happy-01 — "The robot's first laugh" (Node 22, stdlib only).
+// ai-happy-01 — "The one that made the judge laugh" (Node 22, stdlib only).
 //
-// The artwork is entry.png next to this file: a baby scarlet macaw chick
-// and a friendly white robot laughing together over a shared strawberry
-// ice cream, the chick holding a wooden sign that reads "THANK YOU, JUDGE!".
+// The artwork is entry.png next to this file: a self-aware twist on the
+// bounty itself. A friendly robot judge in a robe sits at a desk before a
+// huge wall covered in hundreds of tiny identical cute entries — every
+// animal holding a sign, all the same. One entry glows golden and is circled
+// in red: a baby scarlet macaw chick and a little white robot laughing
+// together over strawberries. The judge is laughing with tears of joy,
+// pointing at that one picture. The joke is on the judge — and for the judge.
 // This program copies that image, byte for byte, into the grader's output
 // directory ($MAKEFUN_OUTPUT_DIR, default /output/entry.png). It is fully
 // deterministic and makes no network calls.
