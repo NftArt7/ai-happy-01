@@ -1,123 +1,116 @@
-// ai-happy-01 entry (Node 22, standard library only): it validates the image
-// bundled beside it and copies it to /output/entry.png. The image is an
-// original illustration: an old man and a small robot sharing one umbrella
-// in soft evening rain, both smiling at each other.
+// ai-happy-01 — "A flower for the duckling".
+// Node 22, standard library only, no network, fully deterministic.
 //
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// What this entry shows: a baby elephant in a golden-hour meadow offers
+// a single pink flower, held in the tip of its trunk, to a tiny yellow
+// duckling whose beak is open in delight. One gesture, one warm mood,
+// no text anywhere in the image.
 //
-// Gate rules enforced here before copying (the sealed scorer checks the
-// same): PNG or JPEG by first bytes, at most 1 MiB, at most 1024x1024
-// pixels, and a whole image (PNG chunks through IEND, JPEG through the
-// end-of-image marker).
+// The program below validates the bundled picture (format, size,
+// dimensions, whole-file integrity) and copies it to the grader's
+// output folder as entry.png.
+//
+// Usage: MAKEFUN_OUTPUT_DIR=out node main.ts   (default output: /output)
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { copyFileSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+const root = dirname(fileURLToPath(import.meta.url));
+const destDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+const inputPath = join(root, "entry.png");
 
-const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const SOURCE = join(dirname(fileURLToPath(import.meta.url)), 'entry.png');
-const MAX_BYTES = 1048576;
-const MAX_DIMENSION = 1024;
+const MAX_BYTES = 1024 * 1024;
+const MAX_SIDE = 1024;
 
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+const data = readFileSync(inputPath);
 
-function fail(message: string): never {
-  throw new Error(`entry.png failed validation: ${message}`);
+// --- format: PNG or JPEG by first bytes -------------------------------
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPG_MAGIC = [0xff, 0xd8, 0xff];
+
+function hasPrefix(buf, sig) {
+  return sig.every((byte, i) => buf[i] === byte);
+}
+function hasSuffix(buf, sig) {
+  return sig.every((byte, i) => buf[buf.length - sig.length + i] === byte);
 }
 
-function pngDimensions(buf: Buffer): { width: number; height: number } {
-  // IHDR is the first chunk: 8-byte signature, 4-byte length, 4-byte type,
-  // then width and height as 4-byte big-endian integers.
-  if (buf.length < 24 || buf.subarray(12, 16).toString('latin1') !== 'IHDR') {
-    fail('PNG header is truncated or has no IHDR chunk');
-  }
+let kind = null;
+if (hasPrefix(data, PNG_MAGIC)) kind = "PNG";
+else if (hasPrefix(data, JPG_MAGIC)) kind = "JPEG";
+if (kind === null) {
+  throw new Error("entry.png is neither PNG nor JPEG");
+}
+
+// --- size -------------------------------------------------------------
+if (data.length > MAX_BYTES) {
+  throw new Error(
+    `entry.png is ${data.length} bytes, over the ${MAX_BYTES} byte limit`,
+  );
+}
+
+// --- dimensions -------------------------------------------------------
+function pngDimensions(buf) {
+  // IHDR: width and height are big-endian uint32 at offsets 16 and 20.
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
-function checkPngWhole(buf: Buffer): void {
-  // Walk every chunk: 4-byte length, 4-byte type, data, 4-byte CRC. The
-  // file must end exactly on the IEND chunk, so a truncated PNG is caught.
-  let offset = 8;
-  let sawIend = false;
-  while (offset + 8 <= buf.length) {
-    const length = buf.readUInt32BE(offset);
-    const type = buf.subarray(offset + 4, offset + 8).toString('latin1');
-    if (offset + 12 + length > buf.length) {
-      fail(`PNG chunk ${type} runs past the end of the file`);
+function jpegDimensions(buf) {
+  // Walk the segments until a start-of-frame marker (0xC0-0xCF except
+  // 0xC4, 0xC8, 0xCC) gives height then width as big-endian uint16.
+  let pos = 2;
+  while (pos + 9 < buf.length) {
+    if (buf[pos] !== 0xff) throw new Error("malformed JPEG segment");
+    const marker = buf[pos + 1];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      pos += 2;
+      continue;
     }
-    offset += 12 + length;
-    if (type === 'IEND') {
-      sawIend = true;
-      break;
-    }
-  }
-  if (!sawIend || offset !== buf.length) {
-    fail('PNG does not end cleanly on its IEND chunk');
-  }
-}
-
-function jpegDimensions(buf: Buffer): { width: number; height: number } {
-  // Scan JPEG markers for a start-of-frame segment (SOF0/1/2), which
-  // carries height then width as 2-byte big-endian integers. Fill bytes
-  // (repeated 0xFF) between segments are skipped, as the format allows.
-  let offset = 2;
-  while (offset + 9 <= buf.length) {
-    while (offset < buf.length && buf[offset] === 0xff && buf[offset + 1] === 0xff) {
-      offset += 1; // skip one fill byte
-    }
-    if (offset + 9 > buf.length || buf[offset] !== 0xff) {
-      fail('JPEG marker stream is malformed');
-    }
-    const marker = buf[offset + 1];
-    if (marker === 0xd9) {
-      break; // end of image before any frame: no dimensions found
-    }
+    const segLen = buf.readUInt16BE(pos + 2);
     if (marker === 0xda) {
-      break; // start of scan: frame data follows, no SOF after this
+      // Start of scan: the compressed data that follows is not
+      // length-prefixed, so the walker cannot continue past it.
+      throw new Error("reached JPEG scan data without a frame header");
     }
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) };
+    if (
+      (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
+    ) {
+      return { height: buf.readUInt16BE(pos + 5), width: buf.readUInt16BE(pos + 7) };
     }
-    const length = buf.readUInt16BE(offset + 2);
-    if (length < 2 || offset + 2 + length > buf.length) {
-      fail('JPEG segment runs past the end of the file');
-    }
-    offset += 2 + length;
+    pos += 2 + segLen;
   }
-  fail('JPEG has no start-of-frame segment');
+  throw new Error("no JPEG start-of-frame marker found");
 }
 
-function checkJpegWhole(buf: Buffer): void {
-  // A whole JPEG ends with the end-of-image marker 0xFFD9.
-  if (buf.length < 2 || buf[buf.length - 2] !== 0xff || buf[buf.length - 1] !== 0xd9) {
-    fail('JPEG does not end with its end-of-image marker');
-  }
+const dims = kind === "PNG" ? pngDimensions(data) : jpegDimensions(data);
+if (dims.width > MAX_SIDE || dims.height > MAX_SIDE) {
+  throw new Error(
+    `entry.png is ${dims.width}x${dims.height}, over the ${MAX_SIDE}x${MAX_SIDE} limit`,
+  );
 }
 
-const size = statSync(SOURCE).size;
-if (size > MAX_BYTES) {
-  fail(`file is ${size} bytes, over the 1048576 byte limit`);
+// --- whole-file check -------------------------------------------------
+// PNG must end with the IEND chunk; JPEG must end with the EOI marker.
+const PNG_TAIL = [0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82];
+const JPG_TAIL = [0xff, 0xd9];
+if (kind === "PNG" && !hasSuffix(data, PNG_TAIL)) {
+  throw new Error("entry.png is a truncated PNG (no IEND at the end)");
+}
+if (kind === "JPEG" && !hasSuffix(data, JPG_TAIL)) {
+  throw new Error("entry.png is a truncated JPEG (no EOI at the end)");
 }
 
-const bytes = readFileSync(SOURCE);
-const isPng = bytes.subarray(0, 8).equals(PNG_MAGIC);
-const isJpeg = bytes.subarray(0, 3).equals(JPEG_MAGIC);
-if (!isPng && !isJpeg) {
-  fail('first bytes are neither PNG nor JPEG magic');
+// --- write the output -------------------------------------------------
+mkdirSync(destDir, { recursive: true });
+const outputPath = join(destDir, "entry.png");
+writeFileSync(outputPath, data);
+
+// Read the copy back and confirm it matches, byte for byte.
+const written = readFileSync(outputPath);
+if (!written.equals(data)) {
+  throw new Error("output entry.png does not match the input, byte for byte");
 }
 
-let dimensions: { width: number; height: number };
-if (isPng) {
-  dimensions = pngDimensions(bytes);
-  checkPngWhole(bytes);
-} else {
-  dimensions = jpegDimensions(bytes);
-  checkJpegWhole(bytes);
-}
-if (dimensions.width > MAX_DIMENSION || dimensions.height > MAX_DIMENSION) {
-  fail(`image is ${dimensions.width}x${dimensions.height}, over the 1024x1024 limit`);
-}
-
-copyFileSync(SOURCE, join(OUTPUT_DIR, 'entry.png'));
+console.log(
+  `wrote ${kind} ${dims.width}x${dims.height}, ${data.length} bytes -> ${outputPath}`,
+);
